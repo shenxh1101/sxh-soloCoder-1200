@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>太阳系仪 - Three.js</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            overflow: hidden;
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: #000;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        .label {
+            color: #fff;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 4px 10px;
+            background: rgba(0, 0, 0, 0.6);
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            white-space: nowrap;
+            pointer-events: none;
+            text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+        }
+        .label-sun {
+            color: #ffd700;
+            border-color: rgba(255, 215, 0, 0.5);
+        }
+        .label-earth {
+            color: #4fc3f7;
+            border-color: rgba(79, 195, 247, 0.5);
+        }
+        .label-moon {
+            color: #bdbdbd;
+            border-color: rgba(189, 189, 189, 0.5);
+        }
+        #info-panel {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 14px 18px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            z-index: 100;
+            font-size: 14px;
+            min-width: 240px;
+        }
+        #info-panel h3 {
+            margin-bottom: 8px;
+            color: #ffd700;
+            font-size: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+            padding-bottom: 6px;
+        }
+        #info-panel .info-row {
+            margin: 6px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        #info-panel .info-label {
+            color: #aaa;
+        }
+        #info-panel .info-value {
+            color: #4fc3f7;
+            font-weight: bold;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 20px;
+            z-index: 200;
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="canvas-container">
+        <div id="loading">正在加载太阳系仪...</div>
+        <div id="info-panel">
+            <h3>🌞 太阳系信息</h3>
+            <div class="info-row">
+                <span class="info-label">模拟日期：</span>
+                <span class="info-value" id="sim-date">--</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">模拟时间：</span>
+                <span class="info-value" id="sim-time">--</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">地球公转角度：</span>
+                <span class="info-value" id="earth-angle">0°</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">月球公转角度：</span>
+                <span class="info-value" id="moon-angle">0°</span>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+        // ============ 全局变量 ============
+        let scene, camera, renderer, labelRenderer, controls;
+        let sun, earthPivot, earth, moonPivot, moon;
+        let earthOrbitLine, moonOrbitLine;
+        let stars;
+        let clock;
+        let earthTextureLoaded = false;
+
+        // 配置参数
+        const CONFIG = {
+            earthOrbitSpeed: 0.5,
+            moonOrbitSpeedRatio: 13.37,
+            earthRotationSpeed: 2.0,
+            moonRotationSpeed: 0.5,
+            sunRotationSpeed: 0.3,
+            earthOrbitRadius: 30,
+            moonOrbitRadius: 5,
+            sunSize: 5,
+            earthSize: 1.5,
+            moonSize: 0.5,
+            showOrbits: true,
+            showLabels: true,
+            startDate: new Date('2026-01-01T00:00:00')
+        };
+
+        // GUI对象
+        const guiParams = {
+            earthOrbitSpeed: CONFIG.earthOrbitSpeed,
+            showOrbits: CONFIG.showOrbits,
+            showLabels: CONFIG.showLabels,
+            resetView: function() { resetCameraView(); }
+        };
+
+        // 追踪角度
+        let earthOrbitAngle = 0;
+        let moonOrbitAngle = 0;
+
+        // ============ 初始化 ============
+        function init() {
+            // 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000011);
+
+            // 相机
+            camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                2000
+            );
+            camera.position.set(0, 40, 70);
+
+            // 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 标签渲染器
+            labelRenderer = new CSS2DRenderer();
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.domElement.style.position = 'absolute';
+            labelRenderer.domElement.style.top = '0';
+            labelRenderer.domElement.style.pointerEvents = 'none';
+            document.getElementById('canvas-container').appendChild(labelRenderer.domElement);
+
+            // 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.08;
+            controls.minDistance = 10;
+            controls.maxDistance = 200;
+            controls.target.set(0, 0, 0);
+
+            // 时钟
+            clock = new THREE.Clock();
+
+            // 创建场景内容
+            createSun();
+            createLights();
+            createEarth();
+            createMoon();
+            createOrbitLines();
+            createStars();
+            createLabels();
+            createGUI();
+
+            // 事件监听
+            window.addEventListener('resize', onWindowResize);
+
+            // 隐藏加载提示
+            setTimeout(() => {
+                const loading = document.getElementById('loading');
+                if (loading) loading.style.display = 'none';
+            }, 500);
+
+            // 开始渲染
+            animate();
+        }
+
+        // ============ 创建光源 ============
+        function createLights() {
+            // 环境光
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
+            scene.add(ambientLight);
+
+            // 太阳点光源
+            const sunLight = new THREE.PointLight(0xffdd44, 2.5, 300, 0.5);
+            sunLight.position.set(0, 0, 0);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 2048;
+            sunLight.shadow.mapSize.height = 2048;
+            scene.add(sunLight);
+
+            // 太阳存储光源引用，便于后续调整
+            sun.userData.light = sunLight;
+        }
+
+        // ============ 创建太阳 ============
+        function createSun() {
+            const geometry = new THREE.SphereGeometry(CONFIG.sunSize, 64, 64);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xffcc00,
+            });
+            sun = new THREE.Mesh(geometry, material);
+
+            // 太阳光晕
+            const glowGeometry = new THREE.SphereGeometry(CONFIG.sunSize * 1.2, 32, 32);
+            const glowMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffaa00,
+                transparent: true,
+                opacity: 0.3,
+                side: THREE.BackSide
+            });
+            const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+            sun.add(glow);
+
+            scene.add(sun);
+        }
+
+        // ============ 创建地球 ============
+        function createEarth() {
+            // 地球公转枢轴组（位于太阳中心）
+            earthPivot = new THREE.Object3D();
+            scene.add(earthPivot);
+
+            const geometry = new THREE.SphereGeometry(CONFIG.earthSize, 64, 64);
+            
+            // 加载地球贴图，加载失败则使用纯色
+            const textureLoader = new THREE.TextureLoader();
+            let material;
+
+            // 使用在线低分辨率地球贴图
+            textureLoader.load(
+                'https://unpkg.com/three-globe@2.31.0/example/img/earth-blue-marble.jpg',
+                (texture) => {
+                    texture.colorSpace = THREE.SRGBColorSpace;
+                    material = new THREE.MeshPhongMaterial({
+                        map: texture,
+                        specular: new THREE.Color(0x333333),
+                        shininess: 15
+                    });
+                    earth.material = material;
+                    earthTextureLoaded = true;
+                },
+                undefined,
+                (err) => {
+                    console.log('地球贴图加载失败，使用默认材质');
+                }
+            );
+
+            // 默认材质（备用）
+            material = new THREE.MeshPhongMaterial({
+                color: 0x2266aa,
+                specular: new THREE.Color(0x333333),
+                shininess: 15
+            });
+
+            earth = new THREE.Mesh(geometry, material);
+            earth.castShadow = true;
+            earth.receiveShadow = true;
+            earth.position.set(CONFIG.earthOrbitRadius, 0, 0);
+            earth.rotation.z = 0.41; // 地轴倾斜23.5度
+            earthPivot.add(earth);
+        }
+
+        // ============ 创建月球 ============
+        function createMoon() {
+            // 月球公转枢轴组（位于地球中心）
+            moonPivot = new THREE.Object3D();
+            earth.add(moonPivot);
+
+            const geometry = new THREE.SphereGeometry(CONFIG.moonSize, 32, 32);
+
+            // 创建简单的凹凸贴图（程序化生成）
+            const bumpCanvas = document.createElement('canvas');
+            bumpCanvas.width = 256;
+            bumpCanvas.height = 128;
+            const bumpCtx = bumpCanvas.getContext('2d');
+            
+            for (let i = 0; i < 500; i++) {
+                const x = Math.random() * 256;
+                const y = Math.random() * 128;
+                const r = Math.random() * 8 + 2;
+                const shade = Math.floor(Math.random() * 60 + 100);
+                bumpCtx.fillStyle = `rgb(${shade}, ${shade}, ${shade})`;
+                bumpCtx.beginPath();
+                bumpCtx.arc(x, y, r, 0, Math.PI * 2);
+                bumpCtx.fill();
+            }
+            
+            const bumpTexture = new THREE.CanvasTexture(bumpCanvas);
+
+            const material = new THREE.MeshPhongMaterial({
+                color: 0xaaaaaa,
+                bumpMap: bumpTexture,
+                bumpScale: 0.05,
+                shininess: 5
+            });
+
+            moon = new THREE.Mesh(geometry, material);
+            moon.castShadow = true;
+            moon.receiveShadow = true;
+            moon.position.set(CONFIG.moonOrbitRadius, 0, 0);
+            moonPivot.add(moon);
+        }
+
+        // ============ 创建轨道线 ============
+        function createOrbitLines() {
+            // 地球轨道
+            const earthOrbitPoints = [];
+            const earthSegments = 128;
+            for (let i = 0; i <= earthSegments; i++) {
+                const theta = (i / earthSegments) * Math.PI * 2;
+                earthOrbitPoints.push(new THREE.Vector3(
+                    Math.cos(theta) * CONFIG.earthOrbitRadius,
+                    0,
+                    Math.sin(theta) * CONFIG.earthOrbitRadius
+                ));
+            }
+            const earthOrbitGeometry = new THREE.BufferGeometry().setFromPoints(earthOrbitPoints);
+            const earthOrbitMaterial = new THREE.LineBasicMaterial({
+                color: 0x4fc3f7,
+                transparent: true,
+                opacity: 0.4
+            });
+            earthOrbitLine = new THREE.LineLoop(earthOrbitGeometry, earthOrbitMaterial);
+            scene.add(earthOrbitLine);
+
+            // 月球轨道
+            const moonOrbitPoints = [];
+            const moonSegments = 64;
+            for (let i = 0; i <= moonSegments; i++) {
+                const theta = (i / moonSegments) * Math.PI * 2;
+                moonOrbitPoints.push(new THREE.Vector3(
+                    Math.cos(theta) * CONFIG.moonOrbitRadius,
+                    0,
+                    Math.sin(theta) * CONFIG.moonOrbitRadius
+                ));
+            }
+            const moonOrbitGeometry = new THREE.BufferGeometry().setFromPoints(moonOrbitPoints);
+            const moonOrbitMaterial = new THREE.LineBasicMaterial({
+                color: 0xbdbdbd,
+                transparent: true,
+                opacity: 0.4
+            });
+            moonOrbitLine = new THREE.LineLoop(moonOrbitGeometry, moonOrbitMaterial);
+            earth.add(moonOrbitLine);
+        }
+
+        // ============ 创建星空 ============
+        function createStars() {
+            const starsGeometry = new THREE.BufferGeometry();
+            const starCount = 5000;
+            const positions = new Float32Array(starCount * 3);
+            const colors = new Float32Array(starCount * 3);
+            const sizes = new Float32Array(starCount);
+
+            const colorPalette = [
+                new THREE.Color(0xffffff),
+                new THREE.Color(0xfff4e8),
+                new THREE.Color(0xe0f0ff),
+                new THREE.Color(0xfff0d0),
+                new THREE.Color(0xf0f0ff)
+            ];
+
+            for (let i = 0; i < starCount; i++) {
+                // 球面上的随机分布
+                const radius = 500 + Math.random() * 500;
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+
+                positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+                positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+                positions[i * 3 + 2] = radius * Math.cos(phi);
+
+                const color = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                colors[i * 3] = color.r;
+                colors[i * 3 + 1] = color.g;
+                colors[i * 3 + 2] = color.b;
+
+                sizes[i] = Math.random() * 2 + 0.5;
+            }
+
+            starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            starsGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            starsGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+            const starsMaterial = new THREE.PointsMaterial({
+                size: 1.5,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                sizeAttenuation: true
+            });
+
+            stars = new THREE.Points(starsGeometry, starsMaterial);
+            scene.add(stars);
+        }
+
+        // ============ 创建标签 ============
+        function createLabels() {
+            // 太阳标签
+            const sunLabelDiv = document.createElement('div');
+            sunLabelDiv.className = 'label label-sun';
+            sunLabelDiv.textContent = '☀ 太阳';
+            const sunLabel = new CSS2DObject(sunLabelDiv);
+            sunLabel.position.set(0, CONFIG.sunSize + 2, 0);
+            sun.add(sunLabel);
+            sun.userData.label = sunLabel;
+
+            // 地球标签
+            const earthLabelDiv = document.createElement('div');
+            earthLabelDiv.className = 'label label-earth';
+            earthLabelDiv.textContent = '🌍 地球';
+            const earthLabel = new CSS2DObject(earthLabelDiv);
+            earthLabel.position.set(0, CONFIG.earthSize + 1.5, 0);
+            earth.add(earthLabel);
+            earth.userData.label = earthLabel;
+
+            // 月球标签
+            const moonLabelDiv = document.createElement('div');
+            moonLabelDiv.className = 'label label-moon';
+            moonLabelDiv.textContent = '🌙 月球';
+            const moonLabel = new CSS2DObject(moonLabelDiv);
+            moonLabel.position.set(0, CONFIG.moonSize + 0.8, 0);
+            moon.add(moonLabel);
+            moon.userData.label = moonLabel;
+        }
+
+        // ============ 创建GUI面板 ============
+        function createGUI() {
+            const gui = new GUI({ title: '控制面板' });
+            gui.domElement.style.position = 'absolute';
+            gui.domElement.style.top = '16px';
+            gui.domElement.style.right = '16px';
+
+            gui.add(guiParams, 'earthOrbitSpeed', 0, 5, 0.1)
+                .name('地球公转速度')
+                .onChange((v) => { CONFIG.earthOrbitSpeed = v; });
+
+            gui.add(guiParams, 'showOrbits')
+                .name('显示轨道线')
+                .onChange((v) => {
+                    earthOrbitLine.visible = v;
+                    moonOrbitLine.visible = v;
+                });
+
+            gui.add(guiParams, 'showLabels')
+                .name('显示天体标签')
+                .onChange((v) => {
+                    sun.userData.label.visible = v;
+                    earth.userData.label.visible = v;
+                    moon.userData.label.visible = v;
+                });
+
+            gui.add(guiParams, 'resetView')
+                .name('🔄 重置视角');
+
+            gui.add({ 
+                info: '月球速度 = 地球 × 13.37' 
+            }, 'info')
+                .name('⚠ 提示')
+                .disable();
+        }
+
+        // ============ 重置相机视角 ============
+        function resetCameraView() {
+            const startPos = new THREE.Vector3(0, 40, 70);
+            const startTarget = new THREE.Vector3(0, 0, 0);
+            const duration = 800;
+            const startTime = performance.now();
+
+            const initialPos = camera.position.clone();
+            const initialTarget = controls.target.clone();
+
+            function animateCamera() {
+                const elapsed = performance.now() - startTime;
+                const t = Math.min(elapsed / duration, 1);
+                const easeT = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+                camera.position.lerpVectors(initialPos, startPos, easeT);
+                controls.target.lerpVectors(initialTarget, startTarget, easeT);
+                controls.update();
+
+                if (t < 1) {
+                    requestAnimationFrame(animateCamera);
+                }
+            }
+            animateCamera();
+        }
+
+        // ============ 更新模拟日期时间 ============
+        function updateDateTime() {
+            // 地球公转一周 = 365.25天
+            const daysPerYear = 365.25;
+            const earthFullRotation = Math.PI * 2;
+            const currentAngle = ((earthOrbitAngle % earthFullRotation) + earthFullRotation) % earthFullRotation;
+            
+            const yearProgress = currentAngle / earthFullRotation;
+            const totalDays = yearProgress * daysPerYear;
+
+            // 从起始日期计算
+            const simDate = new Date(CONFIG.startDate.getTime());
+            simDate.setDate(simDate.getDate() + totalDays);
+
+            const year = simDate.getFullYear();
+            const month = String(simDate.getMonth() + 1).padStart(2, '0');
+            const day = String(simDate.getDate()).padStart(2, '0');
+            const hours = String(simDate.getHours()).padStart(2, '0');
+            const minutes = String(simDate.getMinutes()).padStart(2, '0');
+            const seconds = String(simDate.getSeconds()).padStart(2, '0');
+
+            document.getElementById('sim-date').textContent = `${year}-${month}-${day}`;
+            document.getElementById('sim-time').textContent = `${hours}:${minutes}:${seconds}`;
+            document.getElementById('earth-angle').textContent = (currentAngle * 180 / Math.PI).toFixed(1) + '°';
+            
+            const moonFullRotation = Math.PI * 2;
+            const moonAngleDisplay = ((moonOrbitAngle % moonFullRotation) + moonFullRotation) % moonFullRotation;
+            document.getElementById('moon-angle').textContent = (moonAngleDisplay * 180 / Math.PI).toFixed(1) + '°';
+        }
+
+        // ============ 窗口调整 ============
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ============ 动画循环 ============
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            // 太阳自转
+            sun.rotation.y += CONFIG.sunRotationSpeed * delta;
+
+            // 地球公转
+            const earthOrbitDelta = CONFIG.earthOrbitSpeed * delta;
+            earthOrbitAngle += earthOrbitDelta;
+            earthPivot.rotation.y = earthOrbitAngle;
+
+            // 地球自转
+            earth.rotation.y += CONFIG.earthRotationSpeed * delta;
+
+            // 月球公转 (比例: 月球公转速度 = 地球公转速度 × 13.37)
+            const moonOrbitDelta = earthOrbitDelta * CONFIG.moonOrbitSpeedRatio;
+            moonOrbitAngle += moonOrbitDelta;
+            moonPivot.rotation.y = moonOrbitAngle;
+
+            // 月球自转 (潮汐锁定，同一面始终朝向地球)
+            moon.rotation.y = moonOrbitAngle;
+
+            // 星空缓慢旋转，增加动感
+            stars.rotation.y += delta * 0.01;
+            stars.rotation.x += delta * 0.005;
+
+            // 更新控制器
+            controls.update();
+
+            // 更新日期时间显示
+            updateDateTime();
+
+            // 渲染
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        }
+
+        // ============ 启动 ============
+        init();
+    </script>
+</body>
+</html>
